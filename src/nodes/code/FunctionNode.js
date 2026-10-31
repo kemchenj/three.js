@@ -103,7 +103,55 @@ class FunctionNode extends CodeNode {
 
 		if ( nodeFunction === undefined ) {
 
-			nodeFunction = builder.parser.parseFunction( this.code );
+			for ( const include of this.includes ) {
+
+				if ( include.getNodeFunction !== undefined ) include.getNodeFunction( builder );
+
+			}
+
+			if ( this._updateNodes !== undefined ) {
+
+				for ( const node of this._updateNodes ) {
+
+					if ( builder.nodes.has( node ) === false ) {
+
+						builder.addNode( node );
+						node.updateReference( builder );
+						builder.addSequentialNode( node );
+
+					}
+
+				}
+
+			}
+
+			let code = this.code;
+
+			if ( this._resources !== undefined ) {
+
+				const names = [];
+
+				for ( const [ initialUniform, resource ] of this._resources ) {
+
+					let uniform = initialUniform;
+
+					if ( this._initialBuilderId !== builder.id ) {
+
+						const node = resource.node.getSharedNode( builder );
+						builder.addNode( node );
+						uniform = builder.getUniformFromNode( node, resource.type, resource.shaderStage, resource.name );
+
+					}
+
+					names.push( builder.getPropertyName( uniform, resource.shaderStage ) );
+
+				}
+
+				code = code.replace( /%%resource(\d+)%%/g, ( match, index ) => names[ index ] );
+
+			}
+
+			nodeFunction = builder.parser.parseFunction( code );
 
 			nodeData.nodeFunction = nodeFunction;
 

@@ -498,7 +498,8 @@ class ShaderCallNodeInternal extends Node {
 
 		const { shaderNode, rawInputs } = this;
 
-		const properties = builder.getNodeProperties( shaderNode );
+		const isLayout = shaderNode.layout !== null || builder.currentFunctionNode?._shaderNode === shaderNode;
+		const properties = builder.getNodeProperties( shaderNode, isLayout ? builder.shaderStage : 'any' );
 
 		const subBuild = builder.getClosestSubBuild( shaderNode.subBuilds ) || '';
 		const subBuildProperty = subBuild || 'default';
@@ -598,6 +599,9 @@ class ShaderCallNodeInternal extends Node {
 
 							value = Reflect.get( target, property, receiver );
 
+							if ( property === 'context' ) target.addFunctionDependency( 'id' );
+							else target.addFunctionDependency( property, value );
+
 						}
 
 						return value;
@@ -648,7 +652,7 @@ class ShaderCallNodeInternal extends Node {
 
 	getOutputNode( builder ) {
 
-		const properties = builder.getNodeProperties( this );
+		const properties = builder.getNodeProperties( this, this.shaderNode.layout !== null ? builder.shaderStage : 'any' );
 		const subBuildOutput = builder.getSubBuildOutput( this );
 
 		properties[ subBuildOutput ] = properties[ subBuildOutput ] || this.setupOutput( builder );
@@ -680,7 +684,7 @@ class ShaderCallNodeInternal extends Node {
 		let result = null;
 
 		const buildStage = builder.getBuildStage();
-		const properties = builder.getNodeProperties( this );
+		const properties = builder.getNodeProperties( this, this.shaderNode.layout !== null ? builder.shaderStage : 'any' );
 
 		const nodeData = this.assignable === true ? builder.getDataFromNode( this ) : null;
 
@@ -1233,8 +1237,7 @@ class FnNode extends Node {
 
 export function Fn( jsFunc, layout = null ) {
 
-	// Layout functions are cached across shaders of the same backend. Their bodies
-	// must depend only on explicit inputs and constants, not uniforms or material context.
+	// Layout functions cache resource dependencies, which are registered and resolved per builder.
 	//
 	// Parameters can have default values. A call without some inputs passes the defaults as
 	// arguments, so values like `uv()` are evaluated at the call site. The defaults are resolved

@@ -102,6 +102,15 @@ class CodeNode extends Node {
 
 	}
 
+	build( builder, ...params ) {
+
+		// Record function dependencies even if the code was already generated.
+		builder.addInclude( this );
+
+		return super.build( builder, ...params );
+
+	}
+
 	generate( builder ) {
 
 		const includes = this.getIncludes( builder );

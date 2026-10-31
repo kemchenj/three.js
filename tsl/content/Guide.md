@@ -1655,8 +1655,9 @@ A **Layout** defines the signature of a TSL function, specifying its parameter t
 
 - **Layout**:
   - Generates an equivalent native function based on the `NodeBuilder` target backend (e.g. WGSL or GLSL).
-  - Compiled once into the shader program and efficiently reused across materials via a persistent cache.
-  - The function body must depend only on its explicit inputs and constants, not on uniforms or material context, since the generated function is shared across shaders.
+  - Compatible function templates are cached across materials, with separate caches for shader stages.
+  - The function body can capture uniforms, textures and storage buffers. Resource declarations and bindings are registered for each shader build, and cached references are resolved to that build's resource names.
+  - Changes to the builder context used by the function invalidate incompatible cached templates.
   - Parameters can have default values. Missing inputs are completed with the defaults at the call site, so values like `uv()` are evaluated where the function is called.
 
 <code name="layoutExample">Layout example</code>

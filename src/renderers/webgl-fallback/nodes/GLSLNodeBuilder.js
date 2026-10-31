@@ -542,7 +542,7 @@ ${ flowData.code }
 		}
 
 		const nodeUniform = this.getUniformFromNode( attribute.pboNode, 'texture', this.shaderStage, this.context.nodeName );
-		const textureName = this.getPropertyName( nodeUniform );
+		const textureName = this.getUniformName( nodeUniform, this.context.nodeName );
 
 		this.increaseUsage( indexNode ); // force cache generate to be used as index in x,y
 		const indexSnippet = indexNode.build( this, 'uint' );

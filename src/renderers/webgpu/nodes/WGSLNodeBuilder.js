@@ -1507,6 +1507,8 @@ class WGSLNodeBuilder extends NodeBuilder {
 	 */
 	getBuiltin( name, property, type, shaderStage = this.shaderStage ) {
 
+		this.addFunctionDependency( 'id' );
+
 		const map = this.builtins[ shaderStage ] || ( this.builtins[ shaderStage ] = new Map() );
 
 		if ( map.has( name ) === false ) {
@@ -1735,6 +1737,8 @@ ${ flowData.code }
 	 * @param {string} [shaderStage=this.shaderStage] - The shader stage to enable the directive for.
 	 */
 	enableDirective( name, shaderStage = this.shaderStage ) {
+
+		this.addFunctionDependency( 'id' );
 
 		const stage = this.directives[ shaderStage ] || ( this.directives[ shaderStage ] = new Set() );
 		stage.add( name );

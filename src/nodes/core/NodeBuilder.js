@@ -36,6 +36,47 @@ let _id = 0;
 
 const _functionNodeCache = new WeakMap();
 const _layoutDefaultsCache = new WeakMap();
+const _functionContextData = new WeakMap();
+
+const _recordFunctionMaterial = ( fn, material ) => {
+
+	if ( fn !== null && material && material.isMaterial === true ) {
+
+		const materials = fn._materialDependencies || ( fn._materialDependencies = new Map() );
+		if ( materials.has( material ) === false ) materials.set( material, material.version );
+
+	}
+
+};
+
+// Track outer context reads without treating nested context copies or overrides as dependencies.
+const _createFunctionContext = ( context, record, fn ) => {
+
+	const parent = _functionContextData.get( context );
+	const target = parent !== undefined ? parent.context : context;
+	const track = parent !== undefined ? ( key, value ) => {
+
+		record( key, value );
+		parent.record( key, value );
+
+	} : record;
+	const proxy = new Proxy( target, {
+
+		get( target, key, receiver ) {
+
+			const value = Reflect.get( target, key, receiver );
+			if ( key === 'material' ) _recordFunctionMaterial( fn, value );
+			track( key, value );
+			return value;
+
+		}
+
+	} );
+
+	_functionContextData.set( proxy, { context: target, record: track } );
+	return proxy;
+
+};
 
 // Inputs of a layout function call. They can be destructured as an array or as an object.
 const _createLayoutInputs = ( layout, values ) => {
@@ -889,6 +930,14 @@ class NodeBuilder {
 		const updateBeforeType = node.updateBeforeType;
 		const updateAfterType = node.updateAfterType;
 
+		if ( this.currentFunctionNode !== null && ( node.updateType !== NodeUpdateType.NONE || updateBeforeType !== NodeUpdateType.NONE || updateAfterType !== NodeUpdateType.NONE ) ) {
+
+			const fn = this.currentFunctionNode;
+			fn._updateNodes = fn._updateNodes || new Set();
+			fn._updateNodes.add( node );
+
+		}
+
 		if ( updateBeforeType !== NodeUpdateType.NONE || updateAfterType !== NodeUpdateType.NONE ) {
 
 			this.sequentialNodes.add( node );
@@ -1126,7 +1175,21 @@ class NodeBuilder {
 
 		const previousContext = this.getContext();
 
-		this.setContext( mergeContext( this.context, context ) );
+		const data = _functionContextData.get( previousContext );
+
+		if ( data === undefined ) {
+
+			this.setContext( mergeContext( previousContext, context ) );
+
+		} else {
+
+			this.setContext( _createFunctionContext( mergeContext( data.context, context ), ( key ) => {
+
+				if ( Object.hasOwn( context, key ) === false || key === 'overrideNodes' ) data.record( key, data.context[ key ] );
+
+			}, this.currentFunctionNode ) );
+
+		}
 
 		return previousContext;
 
@@ -1626,6 +1689,8 @@ class NodeBuilder {
 	 */
 	hasGeometryAttribute( name ) {
 
+		this.addFunctionDependency( 'id' );
+
 		return this.geometry && this.geometry.getAttribute( name ) !== undefined;
 
 	}
@@ -1638,6 +1703,8 @@ class NodeBuilder {
 	 * @return {NodeAttribute} The node attribute.
 	 */
 	getAttribute( name, type ) {
+
+		this.addFunctionDependency( 'id' );
 
 		const attributes = this.attributes;
 
@@ -2200,7 +2267,14 @@ class NodeBuilder {
 	 */
 	getDataFromNode( node, shaderStage = this.shaderStage, cache = null ) {
 
-		cache = cache === null ? ( node.isGlobal( this ) ? this.globalCache : this.cache ) : cache;
+		if ( cache === null ) {
+
+			// Global uniforms still need function-local snippets and helper variables.
+			// Resource registration explicitly uses globalCache.
+			const global = node.isGlobal( this ) && ( this.currentFunctionNode === null || node.isUniformNode !== true );
+			cache = global ? this.globalCache : this.cache;
+
+		}
 
 		let nodeData = cache.getData( node );
 
@@ -2266,6 +2340,8 @@ class NodeBuilder {
 	 */
 	getBufferAttributeFromNode( node, type, name = null ) {
 
+		this.addFunctionDependency( 'id' );
+
 		const nodeData = this.getDataFromNode( node, 'vertex' );
 
 		let bufferAttribute = nodeData.bufferAttribute;
@@ -2316,6 +2392,8 @@ class NodeBuilder {
 	 * @return {StructType} The struct type attribute.
 	 */
 	getStructTypeFromNode( node, membersLayout, name = null, shaderStage = this.shaderStage ) {
+
+		this.addFunctionDependency( 'id' );
 
 		const nodeData = this.getDataFromNode( node, shaderStage, this.globalCache );
 
@@ -2386,6 +2464,34 @@ class NodeBuilder {
 		}
 
 		return nodeUniform;
+
+	}
+
+	/**
+	 * Returns a uniform reference. Cached functions use placeholders so each builder
+	 * can resolve its own resource names.
+	 *
+	 * @param {NodeUniform} uniform - The registered uniform.
+	 * @param {?string} [name=null] - The requested resource name.
+	 * @return {string} The resource reference.
+	 */
+	getUniformName( uniform, name = null ) {
+
+		const fn = this.currentFunctionNode;
+
+		if ( fn === null ) return this.getPropertyName( uniform );
+
+		const resources = fn._resources || ( fn._resources = new Map() );
+		let resource = resources.get( uniform );
+
+		if ( resource === undefined ) {
+
+			resource = { reference: `%%resource${ resources.size }%%`, node: uniform.node, type: uniform.type, shaderStage: this.shaderStage, name };
+			resources.set( uniform, resource );
+
+		}
+
+		return resource.reference;
 
 	}
 
@@ -2518,6 +2624,8 @@ class NodeBuilder {
 	 * @return {NodeVar} The node varying.
 	 */
 	getVaryingFromNode( node, name = null, type = node.getNodeType( this ), interpolationType = null, interpolationSampling = null ) {
+
+		this.addFunctionDependency( 'id' );
 
 		const nodeData = this.getDataFromNode( node, 'any' );
 		const subBuildVarying = this.getSubBuildProperty( 'varying', nodeData.subBuilds );
@@ -2743,20 +2851,84 @@ class NodeBuilder {
 
 		if ( this.currentFunctionNode !== null && this.currentFunctionNode.includes.includes( node ) === false ) {
 
-			this.currentFunctionNode.includes.push( node );
+			const fn = this.currentFunctionNode;
+			fn.includes.push( node );
+
+			// Reusing the parent skips rebuilding its children, so inherit their cache dependencies.
+			if ( node._contextDependencies !== undefined ) {
+
+				const context = _functionContextData.get( this.context );
+
+				for ( const [ key, value ] of node._contextDependencies ) {
+
+					if ( context !== undefined ) context.record( key, value );
+					else fn._contextDependencies.set( key, value );
+
+				}
+
+			}
+
+			if ( node._builderDependencies !== undefined ) {
+
+				fn._builderDependencies = fn._builderDependencies || new Map();
+
+				for ( const [ key, value ] of node._builderDependencies ) fn._builderDependencies.set( key, value );
+
+			}
+
+			if ( node._materialDependencies !== undefined ) {
+
+				fn._materialDependencies = fn._materialDependencies || new Map();
+
+				for ( const [ material, version ] of node._materialDependencies ) fn._materialDependencies.set( material, version );
+
+			}
 
 		}
 
 	}
 
 	/**
-	 * Returns the native shader operator name for a given generic name.
-	 * It is a similar type of method like {@link NodeBuilder#getMethod}.
+	 * Records a builder property used to validate cached functions.
+	 *
+	 * External flows, declarations and opaque contexts remain builder-local until
+	 * their dependencies can be replayed safely.
+	 *
+	 * @param {string|symbol} property - The builder property name.
+	 * @param {*} [value] - The observed value. Defaults to the builder's property value.
+	 */
+	addFunctionDependency( property, value = this[ property ] ) {
+
+		const fn = this.currentFunctionNode;
+
+		if ( fn !== null ) {
+
+			fn._builderDependencies = fn._builderDependencies || new Map();
+			fn._builderDependencies.set( property, value );
+
+			if ( value !== null && typeof value === 'object' && value.isMaterial !== true ) {
+
+				fn._builderDependencies.set( 'id', this.id );
+
+			}
+
+			if ( property === 'material' ) _recordFunctionMaterial( fn, value );
+
+		}
+
+	}
+
+	/**
+	 * Builds and caches a layout function and its resource dependencies.
 	 *
 	 * @param {ShaderNodeInternal} shaderNode - The shader node to build the function node with.
 	 * @return {FunctionNode} The build function node.
 	 */
 	buildFunctionNode( shaderNode ) {
+
+		const properties = this.getNodeProperties( shaderNode, this.shaderStage );
+
+		if ( properties.functionNode !== undefined ) return properties.functionNode;
 
 		const backend = this.renderer.backend;
 
@@ -2769,23 +2941,111 @@ class NodeBuilder {
 
 		}
 
-		let fn = cache.get( shaderNode );
+		let stages = cache.get( shaderNode );
+
+		if ( stages === undefined ) {
+
+			stages = {};
+			cache.set( shaderNode, stages );
+
+		}
+
+		let fn = stages[ this.shaderStage ];
+
+		if ( fn !== undefined ) {
+
+			for ( const [ key, value ] of fn._contextDependencies ) {
+
+				if ( this.context[ key ] !== value ) {
+
+					fn = undefined;
+					break;
+
+				}
+
+			}
+
+		}
+
+		if ( fn !== undefined && fn._builderDependencies !== undefined ) {
+
+			for ( const [ key, value ] of fn._builderDependencies ) {
+
+				if ( this[ key ] !== value ) {
+
+					fn = undefined;
+					break;
+
+				}
+
+			}
+
+		}
+
+		if ( fn !== undefined && fn._materialDependencies !== undefined ) {
+
+			for ( const [ material, version ] of fn._materialDependencies ) {
+
+				if ( material.version !== version ) {
+
+					fn = undefined;
+					break;
+
+				}
+
+			}
+
+		}
 
 		if ( fn === undefined ) {
 
 			fn = new FunctionNode();
+			fn._shaderNode = shaderNode;
+			fn._initialBuilderId = this.id;
+			const dependencies = new Map();
+			fn._contextDependencies = dependencies;
 
 			const previous = this.currentFunctionNode;
+			const previousContext = this.context;
 
 			this.currentFunctionNode = fn;
+			this.context = _createFunctionContext( previousContext, ( key, value ) => {
 
-			fn.code = this.buildFunctionCode( shaderNode );
+				if ( dependencies.has( key ) === false ) {
 
-			this.currentFunctionNode = previous;
+					dependencies.set( key, value );
 
-			cache.set( shaderNode, fn );
+					if ( value !== null && typeof value === 'object' && value.isNode !== true && value.isMaterial !== true ) {
+
+						fn._builderDependencies = fn._builderDependencies || new Map();
+						fn._builderDependencies.set( 'id', fn._initialBuilderId );
+
+					}
+
+				}
+
+			}, fn );
+
+			try {
+
+				fn.code = this.buildFunctionCode( shaderNode );
+
+			} finally {
+
+				this.currentFunctionNode = previous;
+				this.context = previousContext;
+
+			}
+
+			// Keep builder-specific templates local and only retain the latest context variant.
+			if ( fn._builderDependencies?.has( 'id' ) !== true ) stages[ this.shaderStage ] = fn;
 
 		}
+
+		properties.functionNode = fn;
+
+		// Register resources at the same point on cache hits and misses to keep uniform order stable.
+		fn.getNodeFunction( this );
 
 		return fn;
 
@@ -3172,6 +3432,12 @@ class NodeBuilder {
 	 */
 	flowNodeFromShaderStage( shaderStage, node, output = null, propertyName = null ) {
 
+		const previousFunction = this.currentFunctionNode;
+		this.addFunctionDependency( 'id' );
+		// This code belongs to the shader flow, not the function template.
+		// Do not record resource placeholders or function includes here.
+		this.currentFunctionNode = null;
+
 		const previousTab = this.tab;
 		const previousCache = this.cache;
 		const previousShaderStage = this.shaderStage;
@@ -3216,6 +3482,7 @@ class NodeBuilder {
 		this.tab = previousTab;
 		this.context = previousContext;
 		this.flowBlock = previousFlowBlock;
+		this.currentFunctionNode = previousFunction;
 
 		return result;
 
